@@ -41,4 +41,4 @@ void solve(const float* input, float* output, int N) {
 
     cudaFree(d_input);
     cudaFree(d_output);
-}R
+}
