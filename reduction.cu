@@ -1,44 +1,54 @@
-#include "solve.h"
 #include <cuda_runtime.h>
+#include "solve.h"
+__global__ void reduceKernel(const float *g_idata, float *g_odata, int n) {
+    extern __shared__ float sdata[];
+    unsigned int tid = threadIdx.x;
+    unsigned int i = blockIdx.x * (blockDim.x * 2) + threadIdx.x;
+    
+    float sum = 0.0f;
+    if (i < n)
+        sum = g_idata[i];
+    if (i + blockDim.x < n)
+        sum += g_idata[i + blockDim.x];
+    sdata[tid] = sum;
+    __syncthreads();
 
-__global__ void reduction(float *d_input, float *d_output, int N){
-   extern __shared__ float sdata[];
-   int idx = blockIdx.x * blockDim.x + threadIdx.x;
-   int tid = threadIdx.x;
-
-   float x = (idx < N) ? d_input[idx] : 0.0f;
-   sdata[tid] = x;
-   __syncthreads();
-
-   for(unsigned int s = blockDim.x/2; s > 0; s>>=1){
-        if(tid < s){
-            sdata[tid] += sdata[tid + s];
-        }
-        __syncthreads();
-   }
-
-   if(tid == 0){
-        d_output[blockIdx.x] = sdata[0];
-   }
+    for (unsigned int s = blockDim.x / 2; s > 0; s >>= 1) {
+         if (tid < s) {
+             sdata[tid] += sdata[tid + s];
+         }
+         __syncthreads();
+    }
+    
+    if (tid == 0) {
+         g_odata[blockIdx.x] = sdata[0];
+    }
 }
 
+void solve(const float* input, float* output, int N) {
+    float *d_in, *d_temp;
+    cudaMalloc(&d_in, N * sizeof(float));
+    cudaMemcpy(d_in, input, N * sizeof(float), cudaMemcpyHostToDevice);
 
-void solve(const float* input, float* output, int N) {  
-    float *d_input, *d_output;
-    cudaMalloc(&d_input, N * sizeof(float));
-    cudaMalloc(&d_output, N * sizeof(float));
+    cudaMalloc(&d_temp, N * sizeof(float));
 
-    cudaMemcpy(d_input, input,  N * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_output, output, N * sizeof(float), cudaMemcpyHostToDevice);
+    int n = N;         
+    int blockSize = 256; 
 
-    dim3 blockDim(256);
-    dim3 gridDim((N + blockDim.x - 1)/blockDim.x);
-    int shared_size = 256 * sizeof(float);
-    reduction<<<gridDim, blockDim, shared_size>>>(d_input, d_output, N);
-    cudaDeviceSynchronize();
+    while (n > 1) {
+         int gridSize = (n + blockSize * 2 - 1) / (blockSize * 2);
+         size_t sharedMemSize = blockSize * sizeof(float);
+         reduceKernel<<<gridSize, blockSize, sharedMemSize>>>(d_in, d_temp, n);
+         cudaDeviceSynchronize();
 
-    cudaMemcpy(output, d_output, N * sizeof(float), cudaMemcpyDeviceToHost);
+         n = gridSize;
+         float* tmp = d_in;
+         d_in = d_temp;
+         d_temp = tmp;
+    }
 
-    cudaFree(d_input);
-    cudaFree(d_output);
+    cudaMemcpy(output, d_in, sizeof(float), cudaMemcpyDeviceToHost);
+    
+    cudaFree(d_in);
+    cudaFree(d_temp);
 }
